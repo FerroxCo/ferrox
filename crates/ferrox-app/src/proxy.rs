@@ -19482,6 +19482,7 @@ mod tests {
             assert_eq!(got, id);
             assert_eq!(cmd, 1);
             tls.get_ref()
+                .get_ref()
                 .set_read_timeout(Some(Duration::from_millis(200)))
                 .expect("timeout");
             let mut ping = [0u8; 4];
