@@ -1787,4 +1787,35 @@ mod tests {
             );
         }
     }
+
+    /// A stream with no data must wake on the relay grain: a sibling that ended has no other way to end this leg.
+    #[test]
+    fn a_stream_read_wakes_when_no_data_arrives() {
+        let (conn, _, _) = bare_conn();
+        let state = Arc::new(H2Stream {
+            state: Mutex::new(StreamState {
+                body: VecDeque::new(),
+                ended: false,
+                dead: false,
+            }),
+            cv: Condvar::new(),
+            send_window: Mutex::new(65_535),
+            responded: AtomicBool::new(false),
+        });
+        let mut reader = H2StreamReader {
+            conn,
+            stream: state,
+            id: 1,
+        };
+        let (sender, receiver) = std::sync::mpsc::channel();
+        thread::spawn(move || {
+            let mut byte = [0u8; 1];
+            let _ = sender.send(reader.read(&mut byte).map_err(|error| error.kind()));
+        });
+        assert_eq!(
+            receiver.recv_timeout(Duration::from_secs(1)),
+            Ok(Err(std::io::ErrorKind::WouldBlock)),
+            "the reader parked past the relay grain with no sibling wake"
+        );
+    }
 }
