@@ -3634,4 +3634,29 @@ mod tests {
         );
         close_session(&session);
     }
+
+    /// A session with no upload and no packet must wake on the relay grain: a sibling that ended has no other way to end this leg.
+    #[test]
+    fn a_session_read_wakes_when_no_upload_arrives() {
+        let session = Arc::new(Session {
+            state: Mutex::new(SessionState {
+                upload: None,
+                packets: BTreeMap::new(),
+                next_seq: 0,
+                ended: false,
+            }),
+            cv: Condvar::new(),
+        });
+        let mut reader = SessionReader::new(session, String::new());
+        let (sender, receiver) = std::sync::mpsc::channel();
+        thread::spawn(move || {
+            let mut byte = [0u8; 1];
+            let _ = sender.send(reader.read(&mut byte).map_err(|error| error.kind()));
+        });
+        assert_eq!(
+            receiver.recv_timeout(std::time::Duration::from_secs(1)),
+            Ok(Err(std::io::ErrorKind::WouldBlock)),
+            "the reader parked past the relay grain with no sibling wake"
+        );
+    }
 }
