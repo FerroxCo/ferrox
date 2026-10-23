@@ -398,6 +398,7 @@ fn inbound_served(protocol: &str) -> bool {
 
 fn spawn_role(address: &str, role: Role) {
     let address = address.to_owned();
+    let role = Arc::new(role);
     thread::spawn(move || accept_loop(&address, &role));
 }
 
@@ -465,11 +466,11 @@ fn serve_vless_inbound(address: &str, inbound: &Json, freedom: bool, path: &str)
                 });
                 return true;
             }
-            let role = Role::Vless {
+            let role = Arc::new(Role::Vless {
                 id,
                 carrier,
                 freedom,
-            };
+            });
             thread::spawn(move || accept_loop(&owned, &role));
             true
         }
@@ -1239,109 +1240,112 @@ pub(crate) struct ShadowsocksOut {
     host: String,
 }
 
-fn accept_loop(address: &str, role: &Role) {
+fn accept_loop(address: &str, role: &Arc<Role>) {
     let target = parse_target(address)
         .unwrap_or_else(|error| exit(&format!("cannot resolve {address}: {error}")));
     let listener = Listener::bind(&target)
         .unwrap_or_else(|error| exit(&format!("cannot listen on {address}: {error}")));
     // The port is a property of the listener, not of each accepted flow: ask once, and only when a table needs it.
-    let local_port = matches!(role, Role::Dokodemo { port_map, .. } if !port_map.is_empty())
-        .then(|| listener.bound_port());
+    let local_port =
+        matches!(role.as_ref(), Role::Dokodemo { port_map, .. } if !port_map.is_empty())
+            .then(|| listener.bound_port());
     for stream in listener.incoming() {
         let Ok(stream) = stream else { continue };
         no_delay(&stream);
-        let role = role.clone();
-        thread::spawn(move || {
-            // Armed once per accepted stream, as the reference wraps its listener's conn.
-            let stream = stream.with_mask(role.tcp_mask());
-            match role {
-                Role::Vless {
-                    id,
-                    carrier,
-                    freedom,
-                } => serve_vless(stream, &id, &carrier, freedom),
-                Role::VlessTls {
-                    id,
-                    freedom,
-                    carrier,
-                    server,
-                } => serve_vless_tls(stream, &id, freedom, &carrier, &server),
-                Role::VlessReality {
-                    id,
-                    freedom,
-                    carrier,
-                    server,
-                } => serve_vless_reality(stream, &id, freedom, &carrier, &server),
-                Role::Trojan {
-                    key,
-                    carrier,
-                    freedom,
-                } => match carrier {
-                    Carrier::Raw(_) => serve_trojan(stream, &key, freedom),
-                    Carrier::Ws { path, .. } => {
-                        serve_trojan_ws(stream, &key, path.as_str(), freedom);
-                    }
-                    Carrier::HttpUpgrade { path, .. } => {
-                        serve_trojan_httpupgrade(stream, &key, path.as_str(), freedom);
-                    }
-                    Carrier::Grpc { path } => {
-                        serve_trojan_grpc(stream, &key, path.as_str(), freedom);
-                    }
-                    Carrier::Xhttp { settings, .. } => {
-                        serve_trojan_xhttp(stream, &key, settings.path.as_str(), freedom);
-                    }
-                    Carrier::HttpHeader { path } => {
-                        serve_trojan_httpheader(stream, &key, path.as_str(), freedom);
-                    }
-                    refused_carriers!() => {}
-                },
-                Role::Vmess {
-                    id,
-                    carrier,
-                    freedom,
-                } => match carrier {
-                    Carrier::Raw(_) => crate::vmess::serve(stream, &id, freedom),
-                    Carrier::Ws { path, .. } => {
-                        crate::vmess::serve_ws(stream, path.as_str(), &id, freedom);
-                    }
-                    Carrier::Xhttp { settings, .. } => {
-                        crate::vmess::serve_xhttp(stream, settings.path.as_str(), &id, freedom);
-                    }
-                    Carrier::HttpHeader { path } => {
-                        crate::vmess::serve_httpheader(stream, path.as_str(), &id, freedom);
-                    }
-                    Carrier::HttpUpgrade { path, .. } => {
-                        crate::vmess::serve_httpupgrade(stream, path.as_str(), &id, freedom);
-                    }
-                    Carrier::Grpc { path } => {
-                        crate::vmess::serve_grpc(stream, path.as_str(), &id, freedom);
-                    }
-                    refused_carriers!() => {}
-                },
-                Role::Shadowsocks {
-                    password,
-                    method,
-                    carrier,
-                    freedom,
-                } => serve_shadowsocks(stream, &password, &method, &carrier, freedom),
-                Role::Socks { out, accounts } => serve_socks(stream, &out, &accounts),
-                Role::Http { out, accounts } => serve_http(stream, &out, &accounts),
-                Role::Mixed { out, accounts } => serve_mixed(stream, &out, &accounts),
-                Role::Dokodemo {
-                    out,
-                    dest,
-                    port_map,
-                } => {
-                    // The flow's own port is the map's key: xray indexes by the flow's original port, which for a raw front is the listener's.
-                    let dest = match local_port.and_then(|port| port_map.get(&port)) {
-                        Some(mapped) => mapped,
-                        None => &dest,
-                    };
-                    let target = out.resolved(dest, crate::router::Network::Tcp, Some(&stream));
-                    serve_connect(stream, target, dest, Front::Socks, &[]);
-                }
+        let role = Arc::clone(role);
+        thread::spawn(move || serve_accepted(stream, &role, local_port));
+    }
+}
+
+fn serve_accepted(stream: Connection, role: &Role, local_port: Option<u16>) {
+    // Armed once per accepted stream, as the reference wraps its listener's conn.
+    let stream = stream.with_mask(role.tcp_mask());
+    match role {
+        Role::Vless {
+            id,
+            carrier,
+            freedom,
+        } => serve_vless(stream, id, carrier, *freedom),
+        Role::VlessTls {
+            id,
+            freedom,
+            carrier,
+            server,
+        } => serve_vless_tls(stream, id, *freedom, carrier, server),
+        Role::VlessReality {
+            id,
+            freedom,
+            carrier,
+            server,
+        } => serve_vless_reality(stream, id, *freedom, carrier, server),
+        Role::Trojan {
+            key,
+            carrier,
+            freedom,
+        } => match carrier {
+            Carrier::Raw(_) => serve_trojan(stream, key, *freedom),
+            Carrier::Ws { path, .. } => {
+                serve_trojan_ws(stream, key, path.as_str(), *freedom);
             }
-        });
+            Carrier::HttpUpgrade { path, .. } => {
+                serve_trojan_httpupgrade(stream, key, path.as_str(), *freedom);
+            }
+            Carrier::Grpc { path } => {
+                serve_trojan_grpc(stream, key, path.as_str(), *freedom);
+            }
+            Carrier::Xhttp { settings, .. } => {
+                serve_trojan_xhttp(stream, key, settings.path.as_str(), *freedom);
+            }
+            Carrier::HttpHeader { path } => {
+                serve_trojan_httpheader(stream, key, path.as_str(), *freedom);
+            }
+            refused_carriers!() => {}
+        },
+        Role::Vmess {
+            id,
+            carrier,
+            freedom,
+        } => match carrier {
+            Carrier::Raw(_) => crate::vmess::serve(stream, id, *freedom),
+            Carrier::Ws { path, .. } => {
+                crate::vmess::serve_ws(stream, path.as_str(), id, *freedom);
+            }
+            Carrier::Xhttp { settings, .. } => {
+                crate::vmess::serve_xhttp(stream, settings.path.as_str(), id, *freedom);
+            }
+            Carrier::HttpHeader { path } => {
+                crate::vmess::serve_httpheader(stream, path.as_str(), id, *freedom);
+            }
+            Carrier::HttpUpgrade { path, .. } => {
+                crate::vmess::serve_httpupgrade(stream, path.as_str(), id, *freedom);
+            }
+            Carrier::Grpc { path } => {
+                crate::vmess::serve_grpc(stream, path.as_str(), id, *freedom);
+            }
+            refused_carriers!() => {}
+        },
+        Role::Shadowsocks {
+            password,
+            method,
+            carrier,
+            freedom,
+        } => serve_shadowsocks(stream, password, method, carrier, *freedom),
+        Role::Socks { out, accounts } => serve_socks(stream, out, accounts),
+        Role::Http { out, accounts } => serve_http(stream, out, accounts),
+        Role::Mixed { out, accounts } => serve_mixed(stream, out, accounts),
+        Role::Dokodemo {
+            out,
+            dest,
+            port_map,
+        } => {
+            // The flow's own port is the map's key: xray indexes by the flow's original port, which for a raw front is the listener's.
+            let dest = match local_port.and_then(|port| port_map.get(&port)) {
+                Some(mapped) => mapped,
+                None => dest.as_ref(),
+            };
+            let target = out.resolved(dest, crate::router::Network::Tcp, Some(&stream));
+            serve_connect(stream, target, dest, Front::Socks, &[]);
+        }
     }
 }
 
@@ -2192,12 +2196,12 @@ fn serve_vless_tls_inbound(
         thread::spawn(move || serve_kcp_loop(&owned, config, &serve));
         return true;
     }
-    let role = Role::VlessTls {
+    let role = Arc::new(Role::VlessTls {
         id: *id,
         freedom,
         carrier: carrier.clone(),
         server,
-    };
+    });
     thread::spawn(move || accept_loop(&owned, &role));
     true
 }
@@ -2225,12 +2229,12 @@ fn serve_vless_reality_inbound(
         thread::spawn(move || serve_kcp_loop(&owned, config, &serve));
         return true;
     }
-    let role = Role::VlessReality {
+    let role = Arc::new(Role::VlessReality {
         id: *id,
         freedom,
         carrier: carrier.clone(),
         server: Arc::new(server),
-    };
+    });
     thread::spawn(move || accept_loop(&owned, &role));
     true
 }
@@ -27723,7 +27727,7 @@ mod poll_copy {
         (answered >= 0).then_some(answered as usize)
     }
 
-    fn is_ready(row: &Row) -> bool {
+    fn is_ready(row: Row) -> bool {
         row.revents & ready_mask() != 0
     }
 
@@ -28087,7 +28091,7 @@ mod poll_copy {
                 continue;
             }
             for index in 0..rows.len() {
-                if !is_ready(&rows[index]) {
+                if !is_ready(rows[index]) {
                     continue;
                 }
                 let (flow_index, direction_index) = owners[index];
