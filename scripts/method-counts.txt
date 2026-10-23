@@ -552,6 +552,7 @@ socks datagram-frame-bytes-overhead 10 ferrox-core-socks::tests::the_datagram_fr
 socks servers-answering-another-method-refused 1 ferrox-app-socks::tests::a_credentialed_session_refuses_a_server_that_answers_no_auth
 socks client-bound-name-heap-allocations 0 ferrox-app-socks::tests::a_bound_name_is_read_into_the_callers_stack
 socks client-request-heap-allocations 0 ferrox-app-socks::tests::a_request_is_written_from_the_callers_stack
+socks client-credential-heap-allocations 0 ferrox-app-socks::tests::a_credentialed_open_writes_from_the_callers_stack
 socks device-flows-leaving-through-the-client-lane 1 ferrox-app-tun::tests::a_device_flow_leaves_through_the_socks_client_lane
 socks tcp-tunnels-through-the-front 1 ferrox-app-proxy::tests::a_socks_client_dials_the_front_and_carries_an_echo
 socks datagrams-through-the-front 1 ferrox-app-proxy::tests::a_socks_client_carries_a_datagram_through_the_front

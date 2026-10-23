@@ -148,6 +148,20 @@ pub fn user_pass(user: &[u8], pass: &[u8]) -> Vec<u8> {
     out
 }
 
+/// Write the RFC 1929 block into `out` and return its length. The caller owns the room so
+/// a credentialed session can write from its stack.
+#[must_use]
+pub fn user_pass_into(user: &[u8], pass: &[u8], out: &mut [u8]) -> usize {
+    let len = 3 + user.len() + pass.len();
+    assert!(out.len() >= len, "socks5 credential buffer too short");
+    out[0] = AUTH_VERSION;
+    out[1] = user.len() as u8;
+    out[2..2 + user.len()].copy_from_slice(user);
+    out[2 + user.len()] = pass.len() as u8;
+    out[3 + user.len()..len].copy_from_slice(pass);
+    len
+}
+
 /// The request a client sends after the greeting: the version, the command, the reserved
 /// byte, and the destination.
 #[allow(

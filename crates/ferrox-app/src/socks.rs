@@ -124,12 +124,14 @@ impl Session {
             return None;
         }
         if offered == socks::METHOD_USER {
-            stream
-                .write_all(&socks::user_pass(
-                    credential.user.as_bytes(),
-                    credential.pass.as_bytes(),
-                ))
-                .ok()?;
+            // `Credential::method` bounds both names at 255 bytes, the widest block this stack holds.
+            let mut block = [0u8; 3 + 255 + 255];
+            let len = socks::user_pass_into(
+                credential.user.as_bytes(),
+                credential.pass.as_bytes(),
+                &mut block,
+            );
+            stream.write_all(&block[..len]).ok()?;
             let mut status = [0u8; 2];
             stream.read_exact(&mut status).ok()?;
             if status[0] != socks::AUTH_VERSION || status[1] != 0 {
@@ -618,6 +620,28 @@ mod tests {
             ]),
             b"PING"
         );
+    }
+
+    /// A credentialed open writes the RFC 1929 block from the stack: the block is bounded
+    /// at 255+255 by `Credential::method`, so no dial needs a heap buffer for it.
+    #[test]
+    fn a_credentialed_open_writes_from_the_callers_stack() {
+        let credential = Credential {
+            user: "u".to_owned(),
+            pass: "p".to_owned(),
+        };
+        let (client, _written) = pair(|server, _seen| {
+            let mut greeting = [0u8; 3];
+            server.read_exact(&mut greeting).expect("the greeting");
+            server.write_all(&[5, 2]).expect("the method reply");
+            let mut block = [0u8; 5];
+            server.read_exact(&mut block).expect("the credential block");
+            server.write_all(&[1, 0]).expect("the credential reply");
+        });
+        let (_session, counts) = ferrox_core::alloc_count::measure(|| {
+            Session::open(client, &credential).expect("a credentialed session")
+        });
+        assert_eq!(counts.allocs, 0, "the credential block is the stack's");
     }
 
     /// A request with a literal address is ten bytes: the writer must not build them on the
