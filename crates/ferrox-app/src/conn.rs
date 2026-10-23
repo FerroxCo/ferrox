@@ -612,6 +612,19 @@ impl Listener {
         }
     }
 
+    /// The TCP port the listener holds, known once at accept time so a per-flow policy does
+    /// not ask the kernel for it again. A Unix listener has no port, so it answers zero.
+    pub(crate) fn bound_port(&self) -> u16 {
+        match self {
+            Listener::Tcp(listener) => listener
+                .local_addr()
+                .map(|bound| bound.port())
+                .unwrap_or_default(),
+            #[cfg(any(unix, windows))]
+            Listener::Unix(_) => 0,
+        }
+    }
+
     #[cfg(test)]
     /// The socket address a TCP listener holds. A Unix listener has no port to report, so it
     /// answers the error a caller expecting an ephemeral TCP port would get from no bind.

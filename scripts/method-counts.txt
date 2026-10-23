@@ -550,6 +550,7 @@ socks request-bytes-per-tcp-dial 10 ferrox-core-socks::tests::the_request_is_the
 socks credential-bytes-per-authenticated-dial 5 ferrox-core-socks::tests::the_user_pass_block_is_rfc_1929
 socks datagram-frame-bytes-overhead 10 ferrox-core-socks::tests::the_datagram_frame_is_rfc_1928
 socks servers-answering-another-method-refused 1 ferrox-app-socks::tests::a_credentialed_session_refuses_a_server_that_answers_no_auth
+socks client-bound-name-heap-allocations 0 ferrox-app-socks::tests::a_bound_name_is_read_into_the_callers_stack
 socks device-flows-leaving-through-the-client-lane 1 ferrox-app-tun::tests::a_device_flow_leaves_through_the_socks_client_lane
 socks tcp-tunnels-through-the-front 1 ferrox-app-proxy::tests::a_socks_client_dials_the_front_and_carries_an_echo
 socks datagrams-through-the-front 1 ferrox-app-proxy::tests::a_socks_client_carries_a_datagram_through_the_front
@@ -576,7 +577,11 @@ front-dokodemo ops-retired-instructions UNBLESSED scripts/count-ops.sh
 front-dokodemo datagrams-carrying-to-the-target 1 ferrox-app-proxy::tests::a_dokodemo_door_carries_a_datagram_to_its_target
 front-dokodemo datagram-frame-allocations-per-frame 0 ferrox-app-proxy::tests::a_forwarded_datagram_is_the_frame_the_client_framed
 front-dokodemo associations-answering-with-the-relay 1 ferrox-app-proxy::tests::the_udp_association_carries_a_datagram_to_the_target
-front-dokodemo transparent-settings-refused 2 ferrox-app-proxy::tests::a_dokodemo_front_refuses_the_transparent_settings
+front-dokodemo port-map-entries-carried 1 ferrox-app-proxy::tests::a_dokodemo_port_table_rewrites_the_flow_its_port_maps
+front-dokodemo port-map-bad-entries-refused 1 ferrox-app-proxy::tests::a_dokodemo_port_table_refuses_a_bad_entry_and_a_miss_keeps_the_address
+front-dokodemo port-map-misses-keeping-the-address 1 ferrox-app-proxy::tests::a_dokodemo_port_table_refuses_a_bad_entry_and_a_miss_keeps_the_address
+front-dokodemo port-map-role-clone-allocations 0 ferrox-app-proxy::tests::a_dokodemo_role_shares_its_port_table
+front-dokodemo transparent-settings-refused 1 ferrox-app-proxy::tests::a_dokodemo_front_refuses_the_transparent_settings
 front-dokodemo xray-scenario-tests-passing 2 scripts/run-upstream-suite.sh
 carrier-foxy h3-read-calls-per-16k-download 5 ferrox-app-foxy::loopback::an_h3_read_crosses_the_frames_under_it
 carrier-foxy h3-bytes-lost-when-the-peer-finishes 0 ferrox-app-foxy::loopback::an_h3_stream_the_peer_finished_ends_the_tunnel

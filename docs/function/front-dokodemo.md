@@ -1,16 +1,18 @@
 # dokodemo-door transparent inbound
 
-Matrix row 24 of table A: a `dokodemo-door` inbound is a door, not a proxy. Every flow that arrives is rewritten to one target the config names — a TCP connection to it, a datagram through it — and the answer comes back to whoever sent it. The tcp half was already served; this slice adds the **udp** half, and the transparent redirect is refused by name rather than served as if it had been asked for.
+Matrix row 24 of table A: a `dokodemo-door` inbound is a door, not a proxy. Every flow that arrives is rewritten to one target the config names — a TCP connection to it, a datagram through it — and the answer comes back to whoever sent it. The tcp half was already served; this slice adds the **udp** half. The transparent redirect is refused by name rather than served as if it had been asked for, while a `portMap` is carried: it is a startup table the flow's own port indexes, not a kernel redirect.
 
 xray registers `tunnel` as another name for the same handler, and a config written with either serves the door (`upstream/xray-core/infra/conf/xray.go:27-53`).
 
 ## What the door does
 
-The tcp flow is a plain rewrite: the accepted stream goes to `serve_connect` with the config's fixed target, over the same `Front::Socks` dial the `tun` front uses.
+The tcp flow is a plain rewrite: the accepted stream goes to `serve_connect` with the config's fixed target, over the same `Front::Socks` dial the `tun` front uses. A `portMap` entry for the listener's own port replaces that target; the table is parsed once at startup and shared by pointer, and the listener's port is read once rather than per accepted flow. A miss keeps the configured address.
 
 The udp flow is the same rewrite with a relay in the middle. A datagram arrives on the door's own socket, and it has to reach the outbound's datagram lane and come back to the client that sent it — so the door rides the lane over a **loopback SOCKS5 UDP association**: the tree's own SOCKS5 client (`ferrox_app::socks::associate`, the handshake the pinned Go client writes) asks the tree's own front (`serve_socks`) for the relay, and the front's datagram lane reads the relay from there.
 
 The relay's address is not enough on its own: the lane answers *the address the request came from*, so one leg per client keeps the answers apart. Each client's leg is a socket connected to the relay; the door writes the framed datagram into the leg, and a reader on the leg sends the answer back to that client.
+
+A `portMap` is the same rewrite keyed by the flow's port: the tcp front indexes it by the listener's port, and the udp door indexes it once by the port its own socket was bound to. The table is the reference's (`proxy/dokodemo/dokodemo.go` indexes the flow's original port); a key that is not a port and a value that is not `host:port` are the Build's refusal.
 
 The door's own socket is bound by the front, before the inbound is armed, and the door's thread only reads from it. A datagram into a port nobody holds is answered with a refusal rather than with the door, so the port is held from the moment the config is served and a datagram that arrives before the door reads it waits in the kernel. A bind that fails leaves the udp half unarmed rather than armed and silent.
 
@@ -45,11 +47,15 @@ graph TD
 | datagrams-carrying-to-the-target | 1 | ferrox-app-proxy::tests::a_dokodemo_door_carries_a_datagram_to_its_target |
 | datagram-frame-allocations-per-frame | 0 | ferrox-app-proxy::tests::a_forwarded_datagram_is_the_frame_the_client_framed |
 | associations-answering-with-the-relay | 1 | ferrox-app-proxy::tests::the_udp_association_carries_a_datagram_to_the_target |
-| transparent-settings-refused | 2 | ferrox-app-proxy::tests::a_dokodemo_front_refuses_the_transparent_settings |
+| port-map-entries-carried | 1 | ferrox-app-proxy::tests::a_dokodemo_port_table_rewrites_the_flow_its_port_maps |
+| port-map-bad-entries-refused | 1 | ferrox-app-proxy::tests::a_dokodemo_port_table_refuses_a_bad_entry_and_a_miss_keeps_the_address |
+| port-map-misses-keeping-the-address | 1 | ferrox-app-proxy::tests::a_dokodemo_port_table_refuses_a_bad_entry_and_a_miss_keeps_the_address |
+| port-map-role-clone-allocations | 0 | ferrox-app-proxy::tests::a_dokodemo_role_shares_its_port_table |
+| transparent-settings-refused | 1 | ferrox-app-proxy::tests::a_dokodemo_front_refuses_the_transparent_settings |
 | xray-scenario-tests-passing | 2 | scripts/run-upstream-suite.sh |
 <!-- counts:end -->
 
-The datagram row is the shape: a datagram the door receives reaches the target the config names, and the answer comes back to the client that sent it. The frame row is what the door's own frame costs: the frame the door writes is the lane's buffer and the framing allocates nothing, so a datagram through the door costs no heap buffer of its own (the `socks` page's witness, `a_forwarded_datagram_is_the_frame_the_client_framed`, is the one that sees it). The association row is the wiring under it — the relay the lane reads from is named by the association's own reply, and a framed datagram through that relay reaches the target and comes back framed. The refusal row is the front's other half: `followRedirect` and `portMap` are refused by name, because the original destination is the kernel's to give and this tree asks for no such socket option. The scenario row is xray-core's own: `TestDokodemoTCP` and `TestDokodemoUDP` run against this tree unmodified through the `scripts/xray-scenarios.sh` seam, and the UDP one was red before this slice.
+The datagram row is the shape: a datagram the door receives reaches the target the config names, and the answer comes back to the client that sent it. The frame row is what the door's own frame costs: the frame the door writes is the lane's buffer and the framing allocates nothing, so a datagram through the door costs no heap buffer of its own (the `socks` page's witness, `a_forwarded_datagram_is_the_frame_the_client_framed`, is the one that sees it). The association row is the wiring under it — the relay the lane reads from is named by the association's own reply, and a framed datagram through that relay reaches the target and comes back framed. The port-table rows are the rewrite: an entry whose key is the flow's port wins, a miss keeps the configured address, an entry that is not `host:port` is the Build's refusal, and cloning the role for a flow shares the table by pointer rather than rebuilding it. The refusal row is the front's other half: `followRedirect` is refused by name, because the original destination is the kernel's to give and this tree asks for no such socket option. The scenario row is xray-core's own: `TestDokodemoTCP` and `TestDokodemoUDP` run against this tree unmodified through the `scripts/xray-scenarios.sh` seam, and the UDP one was red before this slice.
 
 ## Ops
 
@@ -69,10 +75,12 @@ The datagram row is the shape: a datagram the door receives reaches the target t
 - **A private handshake between the device front and the lane.** The `tun` front and this door both need the outbound's datagram lane, and both reached it over a loopback pair whose two halves did not agree on the handshake: the client wrote a SOCKS5 greeting and a request and read twelve bytes, while the server side wrote the ten-byte reply and read nothing. The association is now one shape — the tree's own SOCKS5 UDP client asking the tree's own front — so the bytes on that loopback are the protocol's own, and the device front's production datagram lane works for the first time. `the_udp_association_carries_a_datagram_to_the_target` is the witness: the server half is the tree's own `serve_socks`, and a framed datagram through the relay reaches the target and comes back.
 - **The door's own relay.** The door does not open a socket to the target and relay by itself; it rides the outbound's lane, so the datagram goes where the config's outbound says and the lane's framing is the one the rest of the tree already speaks.
 - **A frame buffer per datagram.** The door built the frame it writes in a buffer of its own, allocated for that datagram. The frame is the door's now — one buffer for the door's life, its capacity held across the datagrams it carries — and the framing itself allocates nothing.
+- **A table and a port lookup per flow.** The accept loop clones the door's role for every accepted flow; the `portMap` used to be cloned with it, rebuilding every entry. The table is an `Arc` now, so the clone is one refcount, and the listener's port is asked of the kernel once at bind rather than with `getsockname` per flow. With no table, neither the syscall nor the lookup runs. `a_dokodemo_role_shares_its_port_table` witnesses the zero-allocation clone.
 
 ## What was not removed
 
-- **The transparent redirect is refused, not served.** `followRedirect` and `portMap` need the original destination, which lives in a socket option (`SO_ORIGINAL_DST` on Linux, TPROXY's mark) this tree asks for nothing; the `tun` front is the tree's transparent path, and it reads the destination off the packet header instead. A config naming either setting is refused by name — in the protobuf form the bridge already refused it, and now in the JSON form too, so neither dialect can read as served.
+- **The transparent redirect is refused, not served.** `followRedirect` needs the original destination, which lives in a socket option (`SO_ORIGINAL_DST` on Linux, TPROXY's mark) this tree asks for nothing; the `tun` front is the tree's transparent path, and it reads the destination off the packet header instead. A config naming it is refused by name — in the protobuf form the bridge already refuses it, and in the JSON form too, so neither dialect can read as served.
+- **The table is still consulted per tcp flow.** The lookup is a hash of the flow's port and only runs when the table is non-empty; a miss falls back to the configured address. The udp door consults it once, when its socket is bound.
 - **One leg per client, and a thread per leg.** The lane answers the address the request came from, so the answers can only be told apart by the source; a leg is that source. The cost is a socket and a thread per client address, reaped when the leg dies. A single socket with the client encoded in the frame would need the lane to carry a field the protocol does not have.
 - **The datagram lane has no per-destination routing.** A datagram names its own destination, so a rule that could split an association refuses it (the socks front's own rule); the door's target is fixed, so this costs the door nothing.
 - **The pb `streamSettings` on a receiver are still refused by name.** Every tls and reality scenario waits on that one, not on this row.
@@ -95,6 +103,6 @@ What a change here owes, read by `scripts/ci-scope.py`; see [`docs/ci-scope.md`]
 
 <!-- scope:begin -->
 - paths: -
-- symbols: dokodemo_udp_door, dokodemo_target, dokodemo_networks, udp_association, relay_leg
+- symbols: dokodemo_udp_door, dokodemo_port_map, dokodemo_target, dokodemo_networks, udp_association, relay_leg
 - go: ./proxy/dokodemo/...
 <!-- scope:end -->

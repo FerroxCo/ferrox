@@ -95,9 +95,10 @@ impl<'a> Destination<'a> {
 enum Bound {
     /// An IP address and port, read as the server sent them.
     Ip(SocketAddr),
-    /// A domain name and port; the association dials the name the way the
-    /// reference's dialer does, the TCP tunnel uses nothing it named.
-    Name(String, u16),
+    /// A domain name and port; the bytes stay in the caller's stack, and the
+    /// association dials the name the way the reference's dialer does. The TCP
+    /// tunnel uses nothing it named.
+    Name { len: u8, port: u16 },
 }
 
 /// A SOCKS5 client session over one connection.
@@ -163,7 +164,7 @@ impl Session {
     /// caller makes of it differs: a TCP tunnel uses nothing the reply bound
     /// (`proxy/socks/client.go` substitutes an address for UDP only), a UDP
     /// association dials the relay — through the name, where the server bound one.
-    fn read_bound(&mut self, atyp: u8) -> Option<Bound> {
+    fn read_bound(&mut self, atyp: u8, name: &mut [u8; 257]) -> Option<Bound> {
         match atyp {
             socks::ATYP_IPV4 => {
                 let mut body = [0u8; 6];
@@ -189,11 +190,9 @@ impl Session {
                 let mut len = [0u8; 1];
                 self.stream.read_exact(&mut len).ok()?;
                 let name_len = usize::from(len[0]);
-                let mut body = vec![0u8; name_len + 2];
-                self.stream.read_exact(&mut body).ok()?;
-                let name = String::from_utf8_lossy(&body[..name_len]).into_owned();
-                let port = u16::from_be_bytes([body[name_len], body[name_len + 1]]);
-                Some(Bound::Name(name, port))
+                self.stream.read_exact(&mut name[..name_len + 2]).ok()?;
+                let port = u16::from_be_bytes([name[name_len], name[name_len + 1]]);
+                Some(Bound::Name { len: len[0], port })
             }
             _ => None,
         }
@@ -205,7 +204,8 @@ impl Session {
     /// but its octets are read so the stream sits where the tunnel begins.
     pub(crate) fn connect(&mut self, destination: &Destination<'_>) -> Option<()> {
         let atyp = self.send(socks::CMD_CONNECT, destination)?;
-        self.read_bound(atyp)?;
+        let mut name = [0u8; 257];
+        self.read_bound(atyp, &mut name)?;
         Some(())
     }
 
@@ -213,10 +213,14 @@ impl Session {
     pub(crate) fn associate(&mut self) -> Option<SocketAddr> {
         // RFC 1928's associate request names no destination: the address is `0.0.0.0:0` — `hev-socks5-core` sends the same all-zero IPv4 address, and `xray-core`'s `ClientHandshake` writes `{1, 0, 0, 0, 0, 0, 0}` for a UDP request.
         let atyp = self.send(socks::CMD_UDP_ASSOCIATE, &Destination::V4([0, 0, 0, 0], 0))?;
-        match self.read_bound(atyp)? {
+        let mut name = [0u8; 257];
+        match self.read_bound(atyp, &mut name)? {
             Bound::Ip(relay) => Some(relay),
             // The server's relay is dialled, not refused: the reference resolves the name its dialer is handed.
-            Bound::Name(name, port) => (name.as_str(), port).to_socket_addrs().ok()?.next(),
+            Bound::Name { len, port } => {
+                let host = String::from_utf8_lossy(&name[..usize::from(len)]);
+                (host.as_ref(), port).to_socket_addrs().ok()?.next()
+            }
         }
     }
 
@@ -607,6 +611,30 @@ mod tests {
             ]),
             b"PING"
         );
+    }
+
+    /// The name a reply binds is read into the caller's stack: the TCP tunnel drops it,
+    /// so reading it must not build a `Vec` and a `String` first.
+    #[test]
+    fn a_bound_name_is_read_into_the_callers_stack() {
+        let (client, _written) = pair(|server, _seen| {
+            server
+                .write_all(&[3, 3, b'a', b'.', b'b', 0, 80])
+                .expect("the bound address");
+        });
+        let mut session = Session { stream: client };
+        let mut name = [0u8; 257];
+        let (bound, counts) = ferrox_core::alloc_count::measure(|| {
+            session
+                .read_bound(socks::ATYP_DOMAIN, &mut name)
+                .expect("the bound name")
+        });
+        assert_eq!(counts.allocs, 0, "the name stays on the stack");
+        let Bound::Name { len, port } = bound else {
+            panic!("a domain reply names a domain")
+        };
+        assert_eq!(&name[..usize::from(len)], b"a.b");
+        assert_eq!(port, 80);
     }
 
     /// The relay a server binds with a name is dialled, not refused: the reference

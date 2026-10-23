@@ -760,7 +760,7 @@ enum Role {
     Dokodemo {
         out: Outbound,
         dest: Destination,
-        port_map: HashMap<u16, Destination>,
+        port_map: Arc<HashMap<u16, Destination>>,
     },
 }
 
@@ -1244,6 +1244,9 @@ fn accept_loop(address: &str, role: &Role) {
         .unwrap_or_else(|error| exit(&format!("cannot resolve {address}: {error}")));
     let listener = Listener::bind(&target)
         .unwrap_or_else(|error| exit(&format!("cannot listen on {address}: {error}")));
+    // The port is a property of the listener, not of each accepted flow: ask once, and only when a table needs it.
+    let local_port = matches!(role, Role::Dokodemo { port_map, .. } if !port_map.is_empty())
+        .then(|| listener.bound_port());
     for stream in listener.incoming() {
         let Ok(stream) = stream else { continue };
         no_delay(&stream);
@@ -1330,11 +1333,10 @@ fn accept_loop(address: &str, role: &Role) {
                     port_map,
                 } => {
                     // The flow's own port is the map's key: xray indexes by the flow's original port, which for a raw front is the listener's.
-                    let port = stream
-                        .local_addr()
-                        .map(|bound| bound.port())
-                        .unwrap_or_default();
-                    let dest = port_map.get(&port).unwrap_or(&dest);
+                    let dest = match local_port.and_then(|port| port_map.get(&port)) {
+                        Some(mapped) => mapped,
+                        None => &dest,
+                    };
                     let target = out.resolved(dest, crate::router::Network::Tcp, Some(&stream));
                     serve_connect(stream, target, dest, Front::Socks, &[]);
                 }
@@ -4310,7 +4312,7 @@ fn serve_dokodemo(address: &str, inbound: &Json, out: &Outbound, label: &str) ->
         return 0;
     }
     let port_map = match dokodemo_port_map(inbound) {
-        Ok(map) => map,
+        Ok(map) => Arc::new(map),
         Err(reason) => {
             eprintln!("dokodemo-door portMap in {label}: {reason}");
             return 0;
@@ -4323,7 +4325,7 @@ fn serve_dokodemo(address: &str, inbound: &Json, out: &Outbound, label: &str) ->
             Role::Dokodemo {
                 out: out.clone(),
                 dest: dest.clone(),
-                port_map: port_map.clone(),
+                port_map: Arc::clone(&port_map),
             },
         );
         armed += 1;
@@ -4335,6 +4337,7 @@ fn serve_dokodemo(address: &str, inbound: &Json, out: &Outbound, label: &str) ->
             return armed;
         };
         let door = out.clone();
+        let port_map = Arc::clone(&port_map);
         thread::spawn(move || dokodemo_udp_door(&socket, &dest, &port_map, &door));
         armed += 1;
     }
@@ -25541,6 +25544,31 @@ mod tests {
         client.send(b"who-is").expect("sends");
         let (n, _) = client.recv_from(&mut back).expect("the door answers");
         assert_eq!(&back[..n], b"who-is", "the answer comes back to the client");
+    }
+
+    /// A flow that arrives at a door shares its table by pointer: the accept loop clones a
+    /// role for each flow, so the table must not be rebuilt there.
+    #[test]
+    fn a_dokodemo_role_shares_its_port_table() {
+        let mut table = HashMap::new();
+        table.insert(443, Destination::Name("example.com".to_owned(), 443));
+        let role = Role::Dokodemo {
+            out: Outbound::Freedom,
+            dest: Destination::Address(SocketAddr::from(([127, 0, 0, 1], 80))),
+            port_map: Arc::new(table),
+        };
+        let (clone, counts) = ferrox_core::alloc_count::measure(|| role.clone());
+        assert_eq!(counts.allocs, 0, "the table is shared, not copied per flow");
+        let Role::Dokodemo { port_map, .. } = clone else {
+            unreachable!()
+        };
+        let Role::Dokodemo {
+            port_map: original, ..
+        } = &role
+        else {
+            unreachable!()
+        };
+        assert!(Arc::ptr_eq(original, &port_map));
     }
 
     /// The transparent redirect is refused by name: the original destination lives in a
