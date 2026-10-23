@@ -19458,6 +19458,77 @@ mod tests {
         server.join().expect("joins");
     }
 
+    /// A raw TLS client must pump before it waits for the answer: an edge that holds its response until it sees payload would otherwise deadlock the opening write.
+    #[test]
+    fn vless_tls_raw_client_pumps_the_upload_before_the_response() {
+        use ferrox_core::tls::TlsProvider as _;
+
+        let _guard = budgets::lock();
+        budgets::apply(&crate::config::Budgets {
+            payload_grace: Some(Duration::from_millis(500)),
+            ..Default::default()
+        });
+        let (server_config, client_config) = carried_tls_configs();
+        let id = [0x4Bu8; 16];
+        let listener = crate::conn::test_bind("127.0.0.1:0").expect("binds");
+        let port = listener.local_addr().expect("addr").port();
+        let server = thread::spawn(move || {
+            let (stream, _) = listener.accept().expect("accepts");
+            let mut tls = ferrox_core::tls::accept(&server_config, stream).expect("accepts");
+            tls.handshake().expect("handshakes");
+            let Some((got, _flow, cmd, _target)) = decode_request(&mut tls) else {
+                panic!("reads a vless header");
+            };
+            assert_eq!(got, id);
+            assert_eq!(cmd, 1);
+            tls.get_ref()
+                .set_read_timeout(Some(Duration::from_millis(200)))
+                .expect("timeout");
+            let mut ping = [0u8; 4];
+            if tls.read_exact(&mut ping).is_err() {
+                return;
+            }
+            tls.write_all(&[0, 0]).expect("answers");
+            tls.write_all(&ping).expect("echoes");
+        });
+        let downstream = crate::conn::test_bind("127.0.0.1:0").expect("binds");
+        let dport = downstream.local_addr().expect("addr").port();
+        let relay = thread::spawn(move || {
+            let (client, _) = downstream.accept().expect("accepts");
+            let server: SocketAddr = format!("127.0.0.1:{port}").parse().expect("addr");
+            let target: SocketAddr = "127.0.0.1:1".parse().expect("addr");
+            let vless = VlessOut {
+                address: "127.0.0.1".to_owned(),
+                port,
+                id,
+                carrier: Carrier::Raw(Chain::default()),
+                host: String::new(),
+                mux: false,
+                quic_roots: None,
+                hysteria_roots: None,
+                tls: Some(Arc::new(client_config)),
+                flow: String::new(),
+                reality: None,
+            };
+            dial_vless(
+                &client,
+                &server,
+                &vless,
+                &Destination::from(target),
+                Ladder::global(),
+            );
+        });
+        let mut sock = Connection::connect(("127.0.0.1", dport)).expect("connects");
+        sock.set_read_timeout(Some(Duration::from_secs(2)))
+            .expect("timeout");
+        sock.write_all(b"ping").expect("writes");
+        assert_eq!(&read_echo(&mut sock), b"ping");
+        budgets::clear();
+        drop(sock);
+        relay.join().expect("joins");
+        server.join().expect("joins");
+    }
+
     /// The listener's ECH path reaches the same VLESS relay as a plain TLS listener: the client's
     /// offer is accepted, the inner name is the configured one, and the target still echoes.
     #[test]
