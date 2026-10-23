@@ -18645,6 +18645,76 @@ mod tests {
         relaying.join().expect("joins");
     }
 
+    /// The payload grace is a ceiling on a refusal, not a delay before the upload: a raw client that already has bytes must hand them to a response-withholding edge at once, or the first write of every upload waits out the grace while the edge waits for that write.
+    #[test]
+    fn vless_raw_client_pumps_the_upload_before_the_payload_grace_expires() {
+        let _guard = budgets::lock();
+        budgets::apply(&crate::config::Budgets {
+            payload_grace: Some(Duration::from_millis(500)),
+            ..Default::default()
+        });
+        let id = [0x28u8; 16];
+        let listener = crate::conn::test_bind("127.0.0.1:0").expect("binds");
+        let port = listener.local_addr().expect("addr").port();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accepts");
+            let Some((got, _flow, cmd, _target)) = decode_request(&mut stream) else {
+                panic!("reads a vless header");
+            };
+            assert_eq!(got, id);
+            assert_eq!(cmd, 1);
+            stream
+                .set_read_timeout(Some(Duration::from_millis(200)))
+                .expect("timeout");
+            let mut payload = [0u8; 4];
+            if stream.read_exact(&mut payload).is_err() {
+                return;
+            }
+            stream.write_all(&[0, 0]).expect("answers");
+            stream.write_all(&payload).expect("echoes");
+        });
+        let front = crate::conn::test_bind("127.0.0.1:0").expect("binds");
+        let front_port = front.local_addr().expect("addr").port();
+        let server_addr: SocketAddr = format!("127.0.0.1:{port}").parse().expect("addr");
+        let vless = VlessOut {
+            address: "127.0.0.1".to_owned(),
+            port,
+            id,
+            carrier: Carrier::Raw(Chain::default()),
+            host: String::new(),
+            mux: false,
+            quic_roots: None,
+            hysteria_roots: None,
+            tls: None,
+            flow: String::new(),
+            reality: None,
+        };
+        let target: SocketAddr = "127.0.0.1:9".parse().expect("addr");
+        let relaying = thread::spawn(move || {
+            let (stream, _) = front.accept().expect("accepts");
+            dial_vless(
+                &stream,
+                &server_addr,
+                &vless,
+                &Destination::from(target),
+                Ladder::global(),
+            );
+        });
+        let mut client = Connection::connect(("127.0.0.1", front_port)).expect("connects");
+        client
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .expect("timeout");
+        client.write_all(b"ping").expect("writes");
+        let mut back = [0u8; 4];
+        let echoed = client.read_exact(&mut back).is_ok();
+        budgets::clear();
+        drop(client);
+        server.join().expect("joins");
+        relaying.join().expect("joins");
+        assert!(echoed, "the first write did not wait out the payload grace");
+        assert_eq!(&back, b"ping");
+    }
+
     /// The edge has to see the name the client was given: a client that looks it up first sends an address for a host it never kept, and the lookup itself is visible to whoever watches its resolver.
     #[test]
     fn vless_sends_the_destination_name_to_the_edge() {
