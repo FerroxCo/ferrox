@@ -168,6 +168,19 @@ pub fn request(cmd: u8, target: &Target<'_>) -> Vec<u8> {
     out
 }
 
+/// Write the request into `out` and return its length. The caller owns the room, so a
+/// client can put the ten bytes of a literal request on its stack instead of the heap.
+#[must_use]
+pub fn request_into(cmd: u8, target: &Target<'_>, out: &mut [u8]) -> usize {
+    let len = 3 + target.wire_len();
+    assert!(out.len() >= len, "socks5 request buffer too short");
+    out[0] = VERSION;
+    out[1] = cmd;
+    out[2] = 0;
+    target.encode_into(&mut out[3..len]);
+    len
+}
+
 /// The address a server bound a session to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Bound<'a> {

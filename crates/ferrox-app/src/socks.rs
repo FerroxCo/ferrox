@@ -146,8 +146,15 @@ impl Session {
     /// carries an address too, but the pinned writer stops at the status
     /// (`"server rejects request: "`).
     fn send(&mut self, cmd: u8, destination: &Destination<'_>) -> Option<u8> {
-        let request = socks::request(cmd, &destination.target());
-        self.stream.write_all(&request).ok()?;
+        let target = destination.target();
+        // The widest name the request can spell is 255 bytes; a longer one keeps the allocating writer.
+        let mut wire = [0u8; 3 + 1 + 1 + 255 + 2];
+        if 3 + target.wire_len() <= wire.len() {
+            let len = socks::request_into(cmd, &target, &mut wire);
+            self.stream.write_all(&wire[..len]).ok()?;
+        } else {
+            self.stream.write_all(&socks::request(cmd, &target)).ok()?;
+        }
         let mut head = [0u8; 4];
         self.stream.read_exact(&mut head).ok()?;
         if head[0] != socks::VERSION || head[1] != 0 {
@@ -613,13 +620,34 @@ mod tests {
         );
     }
 
+    /// A request with a literal address is ten bytes: the writer must not build them on the
+    /// heap for every dial.
+    #[test]
+    fn a_request_is_written_from_the_callers_stack() {
+        let (client, _written) = pair(|server, _seen| {
+            let mut request = [0u8; 10];
+            server.read_exact(&mut request).expect("the request");
+            server
+                .write_all(&[5, 0, 0, 1, 10, 0, 0, 1, 0, 80])
+                .expect("the reply");
+        });
+        let mut session = Session { stream: client };
+        let (atyp, counts) = ferrox_core::alloc_count::measure(|| {
+            session
+                .send(socks::CMD_CONNECT, &Destination::V4([10, 0, 0, 1], 80))
+                .expect("the request is answered")
+        });
+        assert_eq!(counts.allocs, 0, "the request is the stack's");
+        assert_eq!(atyp, socks::ATYP_IPV4);
+    }
+
     /// The name a reply binds is read into the caller's stack: the TCP tunnel drops it,
     /// so reading it must not build a `Vec` and a `String` first.
     #[test]
     fn a_bound_name_is_read_into_the_callers_stack() {
         let (client, _written) = pair(|server, _seen| {
             server
-                .write_all(&[3, 3, b'a', b'.', b'b', 0, 80])
+                .write_all(&[3, b'a', b'.', b'b', 0, 80])
                 .expect("the bound address");
         });
         let mut session = Session { stream: client };

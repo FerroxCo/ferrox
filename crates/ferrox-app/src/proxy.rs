@@ -758,8 +758,8 @@ enum Role {
     /// dokodemo-door: a raw stream to the address its config rewrites every flow to,
     /// where a `portMap` entry for the flow's own port replaces the address.
     Dokodemo {
-        out: Outbound,
-        dest: Destination,
+        out: Arc<Outbound>,
+        dest: Arc<Destination>,
         port_map: Arc<HashMap<u16, Destination>>,
     },
 }
@@ -4323,8 +4323,8 @@ fn serve_dokodemo(address: &str, inbound: &Json, out: &Outbound, label: &str) ->
         spawn_role(
             address,
             Role::Dokodemo {
-                out: out.clone(),
-                dest: dest.clone(),
+                out: Arc::new(out.clone()),
+                dest: Arc::new(dest.clone()),
                 port_map: Arc::clone(&port_map),
             },
         );
@@ -25553,22 +25553,31 @@ mod tests {
         let mut table = HashMap::new();
         table.insert(443, Destination::Name("example.com".to_owned(), 443));
         let role = Role::Dokodemo {
-            out: Outbound::Freedom,
-            dest: Destination::Address(SocketAddr::from(([127, 0, 0, 1], 80))),
+            out: Arc::new(Outbound::Freedom),
+            dest: Arc::new(Destination::Name("example.com".to_owned(), 80)),
             port_map: Arc::new(table),
         };
         let (clone, counts) = ferrox_core::alloc_count::measure(|| role.clone());
-        assert_eq!(counts.allocs, 0, "the table is shared, not copied per flow");
-        let Role::Dokodemo { port_map, .. } = clone else {
+        assert_eq!(counts.allocs, 0, "the role is shared, not copied per flow");
+        let Role::Dokodemo {
+            out,
+            dest,
+            port_map,
+        } = clone
+        else {
             unreachable!()
         };
         let Role::Dokodemo {
-            port_map: original, ..
+            out: original_out,
+            dest: original_dest,
+            port_map: original_map,
         } = &role
         else {
             unreachable!()
         };
-        assert!(Arc::ptr_eq(original, &port_map));
+        assert!(Arc::ptr_eq(original_out, &out));
+        assert!(Arc::ptr_eq(original_dest, &dest));
+        assert!(Arc::ptr_eq(original_map, &port_map));
     }
 
     /// The transparent redirect is refused by name: the original destination lives in a
