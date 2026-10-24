@@ -17505,16 +17505,25 @@ mod tests {
                 .set_read_timeout(Some(Duration::from_millis(20)))
                 .expect("times out");
             let mut buf = [0u8; 4096];
+            let mut rounds = 0u32;
             loop {
                 match tls.read(&mut buf) {
-                    Ok(0) => break,
+                    Ok(0) => {
+                        echo_trace(&format!("inner echo eof after {rounds} rounds"));
+                        break;
+                    }
                     Ok(n) => {
+                        rounds += 1;
                         if tls.write_all(&buf[..n]).is_err() || tls.flush().is_err() {
+                            echo_trace(&format!("inner echo write failed at {rounds}"));
                             break;
                         }
                     }
                     Err(error) if is_timeout(&error) => {}
-                    Err(_) => break,
+                    Err(error) => {
+                        echo_trace(&format!("inner echo read failed at {rounds}: {error:?}"));
+                        break;
+                    }
                 }
             }
         });
