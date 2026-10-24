@@ -17340,6 +17340,7 @@ mod tests {
 
     #[test]
     fn reality_vision_dial_reaches_echo_through_the_relay() {
+        let _guard = crate::budgets::lock();
         let pair = reality_pair(crate::vision::FLOW);
         let (mut user, dialled) = dial_pair(&pair);
         let payload: Vec<u8> = (0..65536u32).map(|i| (i % 251) as u8).collect();
@@ -17352,6 +17353,7 @@ mod tests {
 
     #[test]
     fn reality_raw_dial_reaches_echo_through_the_relay() {
+        let _guard = crate::budgets::lock();
         let pair = reality_pair("");
         let (mut user, dialled) = dial_pair(&pair);
         for seed in [11u8, 12] {
@@ -17372,6 +17374,7 @@ mod tests {
     #[test]
     #[cfg(unix)]
     fn a_small_socket_buffer_does_not_park_a_bulk_round_trip() {
+        let _guard = crate::budgets::lock();
         use std::os::unix::io::AsRawFd;
         let pair = reality_pair("");
         let (mut user, dialled) = dial_pair(&pair);
@@ -17404,6 +17407,7 @@ mod tests {
 
     #[test]
     fn reality_ws_dial_reaches_echo_through_the_relay() {
+        let _guard = crate::budgets::lock();
         let pair = reality_pair_with(
             "",
             "ws",
@@ -17429,6 +17433,7 @@ mod tests {
 
     #[test]
     fn reality_vision_direct_switch_carries_inner_tls() {
+        let _guard = crate::budgets::lock();
         use ferrox_core::tls::TlsProvider as _;
 
         let pair = reality_pair(crate::vision::FLOW);
@@ -17490,6 +17495,7 @@ mod tests {
 
     #[test]
     fn reality_vision_inner_tls_survives_rounds_through_the_window() {
+        let _guard = crate::budgets::lock();
         use ferrox_core::tls::TlsProvider as _;
 
         let pair = reality_pair(crate::vision::FLOW);
