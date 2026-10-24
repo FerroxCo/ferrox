@@ -33521,6 +33521,18 @@ mod dns_lane_tests {
         }]
     }
 
+    /// A literal name is the lookup's own answer: the address it parsed and the record list around it.
+    #[test]
+    fn a_literal_lookup_answers_without_a_socket_addr_buffer() {
+        let (resolve, counts) = ferrox_core::alloc_count::measure(|| dns_lookup(b"192.0.2.9."));
+        let ferrox_core::dns::Resolve::Records { rdata, ttl } = resolve else {
+            panic!("a literal is a record list");
+        };
+        assert_eq!(rdata, vec![vec![192, 0, 2, 9]]);
+        assert_eq!(ttl, 300);
+        assert_eq!(counts.allocs, 2, "the record list and its one address");
+    }
+
     #[test]
     fn the_dns_stream_lane_relays_a_direct_query_byte_for_byte() {
         let query = dns_question("nameserver.test.", 16);
