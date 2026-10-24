@@ -1737,8 +1737,10 @@ fn family_addr(family: u8, host: &str, port: u16) -> Option<SocketAddr> {
 /// The unix path the row's dest spells, as the abstract name behind an `@` where the host
 /// serves one and the filesystem path behind everything else. A host without the family's
 /// own takes, the text a dialect like `@@`'s, dials the path it spells.
-#[cfg(any(target_os = "linux", target_os = "android", target_os = "cygwin"))]
+#[cfg(any(target_os = "linux", target_os = "android"))]
 fn unix_peer(path: &str) -> Option<Connection> {
+    use std::os::linux::net::SocketAddrExt;
+
     if let Some(name) = path.strip_prefix('@') {
         let Ok(addr) = std::os::unix::net::SocketAddr::from_abstract_name(name.as_bytes()) else {
             return None;
@@ -1754,8 +1756,15 @@ fn unix_peer(path: &str) -> Option<Connection> {
     Some(Connection::from(stream))
 }
 
-/// A host whose unix dial returns at once and whose spell takes no abstract name: the
-/// connection module's own arm.
+/// A cygwin host whose std has no abstract-name arm: the text dials the path it spells.
+#[cfg(target_os = "cygwin")]
+fn unix_peer(path: &str) -> Option<Connection> {
+    let Ok(stream) = std::os::unix::net::UnixStream::connect(path) else {
+        return None;
+    };
+    Some(Connection::from(stream))
+}
+
 #[cfg(not(any(target_os = "linux", target_os = "android", target_os = "cygwin")))]
 fn unix_peer(path: &str) -> Option<Connection> {
     if cfg!(target_os = "windows") {
