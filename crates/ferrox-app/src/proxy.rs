@@ -33906,6 +33906,20 @@ mod dns_lane_tests {
         assert_eq!(counts.allocs, 2, "the record list and its one address");
     }
 
+    /// A cached name answers from the refcounted entry: the record list and its one address, and no
+    /// copy of the cache's own vector.
+    #[test]
+    fn a_cached_lookup_answers_without_a_copy_of_the_cache() {
+        remember_lookup("cached.test", 0, &[SocketAddr::from(([192, 0, 2, 7], 0))]);
+        let (resolve, counts) = ferrox_core::alloc_count::measure(|| dns_lookup(b"cached.test."));
+        let ferrox_core::dns::Resolve::Records { rdata, ttl } = resolve else {
+            panic!("a cached name is a record list");
+        };
+        assert_eq!(rdata, vec![vec![192, 0, 2, 7]]);
+        assert_eq!(ttl, 300);
+        assert_eq!(counts.allocs, 2, "the record list and its one address");
+    }
+
     #[test]
     fn the_dns_stream_lane_relays_a_direct_query_byte_for_byte() {
         let query = dns_question("nameserver.test.", 16);
