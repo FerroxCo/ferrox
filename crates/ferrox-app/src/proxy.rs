@@ -9997,9 +9997,8 @@ fn serve_dns_udp(relay: &UdpSocket, dns: &DnsOut) {
                                 DnsUpstream::Tcp(stream) => {
                                     match read_dns_source(stream, &mut body) {
                                         Some(message) => {
-                                            let out = socks_udp_frame(
-                                                &mut framed, None, &named, message,
-                                            );
+                                            let out =
+                                                socks_udp_frame(&mut framed, None, &named, message);
                                             let Some(src) = peer.lock().ok().and_then(|slot| *slot)
                                             else {
                                                 continue;
