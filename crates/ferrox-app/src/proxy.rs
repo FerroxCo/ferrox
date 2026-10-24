@@ -5258,7 +5258,7 @@ fn dial_vmess_ws(
     crate::vmess::pump_relay_carried(
         client,
         reader,
-        crate::vmess::WsSink::carried(writer),
+        writer,
         &close,
         send,
         recv,
@@ -6784,15 +6784,7 @@ fn vmess_tls_carried(
             }
             let closer = writer.clone();
             let close: Arc<dyn Fn() + Send + Sync> = Arc::new(move || closer.close());
-            crate::vmess::pump_relay_carried(
-                client,
-                reader,
-                crate::vmess::WsSink::carried(writer),
-                &close,
-                send,
-                recv,
-                None,
-            );
+            crate::vmess::pump_relay_carried(client, reader, writer, &close, send, recv, None);
         }
         Carrier::HttpUpgrade { path, ed } => {
             let Some((mut reader, sink)) =
@@ -7877,15 +7869,7 @@ fn serve_session_vmess_ws<R: Read + Send + 'static, W: FrameWrite + 'static>(
     }
     let closer = writer.clone();
     let close: Arc<dyn Fn() + Send + Sync> = Arc::new(move || closer.close());
-    crate::vmess::pump_relay_carried(
-        &uplink,
-        reader,
-        crate::vmess::WsSink::carried(writer),
-        &close,
-        send,
-        recv,
-        None,
-    );
+    crate::vmess::pump_relay_carried(&uplink, reader, writer, &close, send, recv, None);
 }
 
 fn serve_session_vmess_grpc<R: Read + Send + 'static, W: FrameWrite + 'static>(
