@@ -128,3 +128,17 @@ append_pem 591
 # inline question and rule buffers moved it from the 55544745 c6099e2 blessed;
 # two ops runs after b6f9218, on separate branches, returned 60123580.
 ferrox_core::dns::tests::the_decide_probe_costs_the_parse_rules_and_answer_and_nothing_else 60123580 dns::tests::the_decide_probe_costs_the_parse_rules_and_answer_and_nothing_else
+
+# Blessed 55544745 by c2beeab: the first row gated under its own filter, the
+# decide probe the DNS outbound's page points method-ops at. The number is the
+# probe test's whole frame under 4096 walks of one direct forward, one rule
+# return, two hijacks and one malformed name, and the diff that moved it is
+# the DNS codec and decode landing in c6099e2.
+ferrox_core::dns::tests::the_decide_probe_costs_the_parse_rules_and_answer_and_nothing_else 55544745 dns::tests::the_decide_probe_costs_the_parse_rules_and_answer_and_nothing_else
+
+# Blessed 1517 (seal) and 1587 (open) by 48bbcf8: the AES-256-GCM ECH suite
+# and its fixed NIST empty-message probe. Both frames are deterministic: the
+# probe's fixed key, zero nonce and empty plaintext leave no random key share
+# in the count, and four ops runs returned the same pair.
+ferrox_core::tls::hpke::Context::seal 1517 tls::hpke::tests::aes_256_gcm_matches_the_nist_empty_message_vector
+ferrox_core::tls::hpke::Context::open 1587 tls::hpke::tests::aes_256_gcm_matches_the_nist_empty_message_vector
